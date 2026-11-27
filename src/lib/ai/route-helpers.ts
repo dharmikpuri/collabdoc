@@ -36,15 +36,6 @@ export async function guardAiRequest(
   const tooLarge = checkBodySize(request, MAX_AI_CONTENT_BYTES + 4_096);
   if (tooLarge) return { error: tooLarge };
 
-  if (!isAiEnabled()) {
-    return {
-      error: NextResponse.json(
-        { error: "AI features aren't configured on this deployment." },
-        { status: 503 },
-      ),
-    };
-  }
-
   const session = await auth();
   if (!session?.user) {
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
@@ -55,6 +46,17 @@ export async function guardAiRequest(
   const access = await getDocumentAccess(session.user.id, documentId);
   if (!access) {
     return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
+  }
+
+  // Only after authorisation, so the deployment's configuration isn't revealed
+  // to anonymous callers or to users without access to the document.
+  if (!isAiEnabled()) {
+    return {
+      error: NextResponse.json(
+        { error: "AI features aren't configured on this deployment." },
+        { status: 503 },
+      ),
+    };
   }
 
   return {
