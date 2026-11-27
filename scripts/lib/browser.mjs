@@ -49,15 +49,16 @@ export async function launchBrowser({ port = 9333, headless = true } = {}) {
     { stdio: "ignore" },
   );
 
-  // Wait for the debugging endpoint to accept connections.
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  // Wait for the debugging endpoint to accept connections. A cold CI runner can
+  // take well over 10 s to start Chrome, so allow 30 s.
+  let ready = false;
+  for (let attempt = 0; attempt < 120 && !ready; attempt += 1) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
-      if (res.ok) break;
+      ready = (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
     } catch {
       // not up yet
     }
-    await sleep(250);
+    if (!ready) await sleep(250);
   }
 
   let closed = false;
@@ -100,6 +101,11 @@ export async function launchBrowser({ port = 9333, headless = true } = {}) {
   };
   // Also when a run crashes or exits early, so Chrome and its profile don't outlive it.
   process.once("exit", close);
+
+  if (!ready) {
+    close();
+    throw new Error(`Chrome's debugging endpoint on port ${port} did not start within 30 s`);
+  }
 
   return { proc, port, close };
 }

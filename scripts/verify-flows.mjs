@@ -556,6 +556,8 @@ async function main() {
     finish(browser, { documentId });
   } catch (error) {
     console.error("\nHarness error:", error.stack ?? error.message);
+    // Count it, so a run that never got going can't report success.
+    check("run completed without a harness error", false, String(error?.message ?? error));
     finish(browser);
   }
 }
