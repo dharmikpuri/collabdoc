@@ -138,7 +138,19 @@ async function main() {
       "landing page renders its headline",
       await A.js("document.querySelector('h1')?.textContent.includes('Write together')"),
     );
+    // The hero demo plays on its own (in sync → offline → merged), and the switch
+    // flips whatever state it is in: clicked during the "offline" phase it
+    // reconnects instead. Wait for hydration, click, and if that reconnected,
+    // click again so the network ends up cut. After a click it stops auto-playing.
+    const SWITCH = "document.querySelector('button[role=\"switch\"]')";
+    await A.until(
+      `Boolean(${SWITCH}) && Object.keys(${SWITCH}).some((k) => k.startsWith('__reactProps'))`,
+      10_000,
+    );
     await A.click('button[role="switch"]');
+    if (await A.until(`${SWITCH}.getAttribute('aria-checked') === 'true'`, 1000)) {
+      await A.click('button[role="switch"]');
+    }
     check(
       "hero demo: cutting the network shows the offline state",
       await A.until("document.body.innerText.includes('Marco is offline')", 4000),
