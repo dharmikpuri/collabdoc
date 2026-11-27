@@ -329,3 +329,19 @@ export const CLOSING = {
   primaryCta: { signedIn: "Open your workspace", signedOut: "Create your workspace" },
   labCta: "Open the sync lab",
 } as const;
+
+// ── Walkthrough video ────────────────────────────────────────────────────────
+
+export const WALKTHROUGH = {
+  id: "walkthrough",
+  label: "Walkthrough",
+  title: "See the whole product in",
+  accent: "90 seconds",
+  description:
+    "Live editing, an offline merge, version history, the AI assistant and sharing — narrated end to end.",
+  video: "/video/collabdoc-walkthrough.mp4",
+  poster: "/video/collabdoc-walkthrough-poster.jpg",
+  videoLabel: "CollabDoc product walkthrough, about 90 seconds, with narration",
+  fallback: "Your browser can't play this video.",
+  download: "Download the walkthrough",
+} as const;

@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { MarketingHeader } from "@/components/marketing/marketing-header";
 import { Hero } from "@/components/marketing/sections/hero";
+import { Walkthrough } from "@/components/marketing/sections/walkthrough";
 import { FeatureRow } from "@/components/marketing/sections/feature-row";
 import { Glance } from "@/components/marketing/sections/glance";
 import { WorkspaceShowcase } from "@/components/marketing/sections/workspace-showcase";
@@ -27,6 +28,7 @@ export default async function HomePage() {
 
       <main id="main-content" className="flex-1 overflow-x-clip">
         <Hero {...cta} />
+        <Walkthrough />
         <FeatureRow feature={FEATURES.offline} />
         <FeatureRow feature={FEATURES.merge} />
         <FeatureRow feature={FEATURES.history} />
