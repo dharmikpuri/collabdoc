@@ -8,7 +8,10 @@
  *
  * No test-only routes, no auth bypass: this is the real form, really submitted.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const CHROME_CANDIDATES = [
@@ -28,13 +31,15 @@ async function findBrowser() {
 
 export async function launchBrowser({ port = 9333, headless = true } = {}) {
   const binary = await findBrowser();
-  const profile = `C:/Windows/Temp/collabdoc-verify-${Date.now()}`;
+  const profile = join(tmpdir(), `collabdoc-verify-${Date.now()}`);
 
   const proc = spawn(
     binary,
     [
       `--remote-debugging-port=${port}`,
       ...(headless ? ["--headless=new"] : []),
+      // CI runners are throwaway containers where Chrome's sandbox can't start.
+      ...(process.env.CI ? ["--no-sandbox"] : []),
       "--disable-gpu",
       "--no-first-run",
       "--no-default-browser-check",
@@ -55,7 +60,48 @@ export async function launchBrowser({ port = 9333, headless = true } = {}) {
     await sleep(250);
   }
 
-  return { proc, port, close: () => proc.kill() };
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    // On Windows the process we spawned hands off to a relaunched browser that is
+    // not its child, so killing our pid (or its tree) leaves Chrome running with
+    // the profile locked. Every one of its processes carries this run's unique
+    // profile folder in its command line, so stop them by that — repeatedly,
+    // since Chrome can start a helper process while the others are being stopped.
+    if (process.platform === "win32") {
+      const ours = `Get-CimInstance Win32_Process -Filter "Name='${basename(binary)}'" | Where-Object { $_.CommandLine -like '*${basename(profile)}*' }`;
+      spawnSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `for ($i = 0; $i -lt 10; $i++) { $p = @(${ours}); if ($p.Count -eq 0) { break }; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 300 }`,
+        ],
+        { stdio: "ignore" },
+      );
+    } else {
+      proc.kill();
+    }
+    // Every run gets a fresh profile (~50 MB); remove it so repeated runs don't fill
+    // the disk. Files stay locked for a moment after Chrome exits, so retry for a
+    // few seconds. This must stay synchronous: callers exit straight after.
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        rmSync(profile, { recursive: true, force: true });
+        break;
+      } catch {
+        if (Date.now() > deadline) break; // best effort: at worst this one folder is left
+        Atomics.wait(pause, 0, 0, 200);
+      }
+    }
+  };
+  // Also when a run crashes or exits early, so Chrome and its profile don't outlive it.
+  process.once("exit", close);
+
+  return { proc, port, close };
 }
 
 /**

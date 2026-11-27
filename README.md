@@ -250,16 +250,35 @@ demo button to the sign-in page; it publishes the demo password, so only enable 
 
 ## Testing
 
-Static checks run in CI on every push:
+Three layers, all run by CI on every push and pull request (see [CI/CD](#cicd)):
 
-```bash
-npm run lint
-npm run typecheck
-npm run build
-```
+| Layer      | Command                                | Runs against                                        |
+| ---------- | -------------------------------------- | --------------------------------------------------- |
+| Unit       | `npm test`                             | Pure logic in `src/lib`, no database or network     |
+| End-to-end | `npm run test:api`, `npm run test:e2e` | The running app, collab server, Postgres, a browser |
+| Load       | `npm run test:load`                    | The collab server with many simultaneous editors    |
 
-Two end-to-end suites run against a real running app (both servers up) and the real database —
-nothing is mocked and no guard is bypassed:
+Lint, typecheck and a production build run alongside them.
+
+### Unit tests
+
+120 [Vitest](https://vitest.dev) tests, next to the code they cover (`src/lib/**/*.test.ts`):
+
+- **CRDT merging** — two people editing the same sentence while offline both keep their edits; an
+  insertion survives a concurrent deletion around it; updates applied in any order give the same
+  document; random concurrent edits across three peers with flaky reconnects always converge.
+- **Security** — the full owner / editor / viewer capability matrix; the sign-in redirect guard
+  against open-redirect tricks (`//host`, `/\host`, `javascript:`, dot-segments…); the rate
+  limiter's window and its fallback when Redis is down (it never fails open); collab tokens.
+- **Version compare** — the LCS diff (including a randomised replay check) and the block- then
+  word-level document comparison.
+- **Search and import/export** — chunking for embeddings, Yjs → text extraction, Markdown
+  import/export round-trips and unsafe-link stripping, and the validation schemas.
+
+### End-to-end suites
+
+Run against a real running app (both servers up) and a real database — nothing is mocked and no
+guard is bypassed:
 
 ```bash
 npm run test:e2e   # real browser (Chrome/Edge via DevTools Protocol), two users
@@ -272,9 +291,45 @@ npm run test:api   # API, authorization rules and AI endpoints
 - **`test:api`** covers authentication, the role matrix (owner / editor / viewer / stranger),
   version save and restore, payload limits and the AI endpoints. The AI checks need
   `GEMINI_API_KEY`; on a free-tier key, rapid calls can hit the rate limit (HTTP 429), which a
-  `GEMINI_API_KEY_2` backup absorbs.
+  `GEMINI_API_KEY_2` backup absorbs. Without a key (as in CI), the checks that need a model's
+  answer are reported as `SKIP` and everything else still runs.
 
 Both create throwaway `@example.com` accounts. Set `VERIFY_BASE_URL` to test another origin.
+
+### Load test
+
+```bash
+npm run test:load -- --clients 50 --edits 20
+```
+
+Connects 50 editors and one read-only observer to the same document through the real collab
+server, using the same Hocuspocus/Yjs client the editor uses. Every editor makes 20 labelled edits
+(a new paragraph, or text at the start or end of an existing one) at about four edits a second. The
+run fails unless every client ends with an identical document, no edit is missing, and a newcomer
+who connects after everyone has left loads every edit back from Postgres. It creates and then
+deletes a throwaway user and document — never point it at production.
+
+Results on one laptop (Windows 11, Node 24; the app, the collab server, the database —
+[PGlite](https://pglite.dev), Postgres compiled to WebAssembly — and every simulated client on the
+same machine), October 2026:
+
+| Editors on one document | Edits per run | Edit reaches another user, p50 / p95 / p99 | Identical everywhere | Lost after reload |
+| ----------------------- | ------------- | ------------------------------------------ | -------------------- | ----------------- |
+| 50 (five runs)          | 1,000         | 11–13 ms / 36–70 ms / 48–100 ms            | yes                  | 0                 |
+| 100 (two runs)          | 2,000         | 0.5–0.7 s / 1.1–1.2 s / 1.4–2.4 s          | yes                  | 0                 |
+| 200 (two runs)          | 2,000         | 8–12 s / 12–33 s / 13–45 s                 | yes                  | 0                 |
+
+What this does and doesn't show:
+
+- With 50 people typing in one document at once, an edit reaches everyone else in well under
+  100 ms at the 95th percentile.
+- Beyond that, latency grows but correctness doesn't: every run converged and lost nothing.
+- The 100-editor numbers are mostly the test machine's limit, not the server's: the single process
+  simulating every client used 93% of a CPU core, the collab server 46%. At 200 both are busy —
+  every edit is fanned out to 200 connections. Finding the server's real ceiling needs clients
+  spread over several machines; that hasn't been done.
+
+CI runs a smaller version (25 editors × 10 edits) on every push as a regression check.
 
 ## Offline mutation queue
 
@@ -370,10 +425,14 @@ a third writer.
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- **verify** — `prisma validate`, lint, typecheck and a production build of the app, plus a
-  typecheck of the collab server;
+- **verify** — `prisma validate`, lint, typecheck, the unit tests and a production build of the
+  app, plus a typecheck of the collab server;
 - **collab-image** — builds the collab-server Docker image;
-- **migrate** — on `main` only, after both pass, runs `prisma migrate deploy` against production.
+- **e2e** — the whole stack in the runner: Postgres with pgvector and every migration (including
+  the RLS policies), the production build, the collab server and Chrome. Runs the API and browser
+  suites, then the load test with 25 editors. There is no Gemini key there, so checks that need a
+  model's answer report `SKIP`;
+- **migrate** — on `main` only, after all three pass, runs `prisma migrate deploy` against production.
   It uses the `DATABASE_URL`/`DIRECT_URL` secrets of the `production` environment and is skipped
   until they're set.
 
@@ -440,5 +499,7 @@ Every value that appears in more than one place is defined once:
 | `npm run typecheck` | TypeScript, no emit                              |
 | `npm run format`    | Prettier write                                   |
 | `npm run seed:demo` | Create (or `-- --reset`) the demo workspace      |
+| `npm test`          | Unit tests (Vitest)                              |
 | `npm run test:e2e`  | Browser end-to-end suite (needs both servers)    |
 | `npm run test:api`  | API and authorization suite (needs both servers) |
+| `npm run test:load` | Load test on the collab server (see Testing)     |

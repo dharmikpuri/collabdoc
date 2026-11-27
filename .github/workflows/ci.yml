@@ -43,6 +43,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test
+
       - name: Build
         run: npm run build
 
@@ -60,6 +63,87 @@ jobs:
       - name: Build the collab-server Docker image
         run: docker build --tag collabdoc-collab:ci collab-server
 
+  # The whole stack, for real: Postgres with pgvector and every migration
+  # (including the RLS policies), the production build of the app, the collab
+  # server, a real browser. Runs the API and UI suites, then a small load test.
+  # There is no Gemini key here, so checks that need a model's answer report
+  # SKIP; authentication, roles, isolation, payload caps, live collaboration and
+  # offline re-sync all run.
+  e2e:
+    name: End-to-end · API, UI, load
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: collabdoc
+          POSTGRES_PASSWORD: collabdoc
+          POSTGRES_DB: collabdoc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U collabdoc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    # Throwaway values for a database that exists only for this job.
+    env:
+      DATABASE_URL: "postgresql://collabdoc:collabdoc@localhost:5432/collabdoc"
+      DIRECT_URL: "postgresql://collabdoc:collabdoc@localhost:5432/collabdoc"
+      AUTH_SECRET: "ci-e2e-auth-secret-not-used-anywhere"
+      AUTH_URL: "http://localhost:3000"
+      COLLAB_TOKEN_SECRET: "ci-e2e-collab-secret-not-used-anywhere"
+      NEXT_PUBLIC_COLLAB_WS_URL: "ws://localhost:1234"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+      VERIFY_BASE_URL: "http://localhost:3000"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci && npm --prefix collab-server ci
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Build
+        run: npm run build
+
+      - name: Start the app and the collab server
+        run: |
+          npm start -- --port 3000 > app.log 2>&1 &
+          PORT=1234 npm --prefix collab-server start > collab.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -sf http://localhost:3000/api/health > /dev/null &&
+               curl -sf http://localhost:1234/health > /dev/null; then
+              echo "Both servers are up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Servers did not become ready"
+          exit 1
+
+      - name: API and authorization suite
+        run: npm run test:api
+
+      - name: Browser suite (two users, live collaboration, offline)
+        run: npm run test:e2e
+
+      - name: Load test (25 editors on one document)
+        run: npm run test:load -- --clients 25 --edits 10
+
+      - name: Server logs
+        if: failure()
+        run: tail -n 200 app.log collab.log
+
   # Continuous delivery for the database: apply pending migrations after a
   # change lands on main. The app itself deploys through Vercel's Git
   # integration and the collab server through Railway's; this keeps the schema
@@ -67,7 +151,7 @@ jobs:
   # so forks and fresh clones never fail here.
   migrate:
     name: Apply database migrations
-    needs: [verify, collab-image]
+    needs: [verify, collab-image, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production

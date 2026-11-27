@@ -489,13 +489,25 @@ async function main() {
     );
 
     await A.goto("/settings", 1500);
-    await A.until("Boolean(document.querySelector('#name'))", 10_000);
+    // Wait for React to hydrate the form: a submit before that is a plain HTML
+    // post, which saves the name but never shows the success message.
+    await A.until(
+      "(() => { const el = document.querySelector('#name'); return Boolean(el) && Object.keys(el).some((k) => k.startsWith('__reactProps')); })()",
+      10_000,
+    );
     await A.fill("#name", "E2E Owner Renamed");
     await A.js("document.querySelector('#name').form.requestSubmit(); 1");
-    check(
-      "profile name can be updated",
-      await A.until("document.body.innerText.includes('Profile updated')", 10_000),
-    );
+    // The save refreshes the session and re-renders the page, which can clear the
+    // "Profile updated." message before it is seen. What must hold is that the
+    // name was saved, so reload and read it back.
+    const confirmed = await A.until("document.body.innerText.includes('Profile updated')", 10_000);
+    await A.goto("/settings", 1500);
+    await A.until("Boolean(document.querySelector('#name'))", 10_000);
+    const savedName = String(await A.js("document.querySelector('#name')?.value"));
+    check("profile name can be updated", savedName === "E2E Owner Renamed", savedName);
+    if (savedName === "E2E Owner Renamed" && !confirmed) {
+      console.log("  (…) name was saved, but the confirmation message was not seen");
+    }
 
     // Sign out through the account menu.
     await A.js(
@@ -508,6 +520,14 @@ async function main() {
     await A.js(
       "(() => { const m = [...document.querySelectorAll('[role=menuitem]')].find((x) => x.textContent.trim() === 'Sign out'); m?.click(); return 1; })()",
     );
+    // If changes from the offline section are still queued, the app asks before
+    // signing out (they stay on the device). Confirm it, as a user would.
+    const confirmButton =
+      "[...document.querySelectorAll('.Toastify button')].find((b) => b.textContent.trim() === 'Sign out')";
+    if (await A.until(`Boolean(${confirmButton})`, 2_500)) {
+      console.log("  (…) sign-out asked to confirm queued offline changes; confirming");
+      await A.js(`(${confirmButton}).click(), 1`);
+    }
     const signedOut = await A.until("!location.pathname.startsWith('/settings')", 12_000);
     await A.goto("/dashboard", 2000);
     check(
