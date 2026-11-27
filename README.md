@@ -213,8 +213,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 > **Connection note:** use a **session-mode** Postgres connection (port `5432`), not the
 > transaction pooler (`6543`) — the app uses Prisma interactive transactions. Supabase's direct
 > host (`db.<ref>.supabase.co`) is IPv6-only, which works on most home networks but **not on
-> Vercel or Railway**: in production use Supabase → Connect → **Session pooler**
-> (`aws-…pooler.supabase.com:5432`), which is IPv4 and session mode.
+> Vercel, Render or Railway**: in production use Supabase → Connect → **Session pooler**
+> (`aws-…pooler.supabase.com:5432`, user `postgres.<ref>`), which is IPv4 and session mode.
 
 `.env` is git-ignored; never commit real values.
 
@@ -385,21 +385,36 @@ The two processes deploy separately; CI/CD ties them together.
    public URL and `NEXT_PUBLIC_COLLAB_WS_URL` to the collab server's `wss://` URL.
 3. Every push to `main` deploys; pull requests get preview deployments.
 
-### Collaboration server → Railway (or any host with persistent WebSockets)
+### Collaboration server → Render (or any host with persistent WebSockets)
 
 `collab-server/` ships as a Docker image (`collab-server/Dockerfile`, non-root, with a container
-health check):
+health check). The live instance runs on Render's free plan in Singapore, close to the database:
 
-1. On Railway, create a service from this repo with root directory `collab-server`.
-   `railway.json` selects the Dockerfile and the `/health` check.
-2. Set `DATABASE_URL` (same database) and `COLLAB_TOKEN_SECRET` (must match the app). `PORT` is
-   provided by Railway.
-3. Point the app's `NEXT_PUBLIC_COLLAB_WS_URL` at the service's `wss://` URL.
+1. On Render, create a **Web Service** from this repo: runtime **Docker**, root directory
+   `collab-server`, health check path `/health`. (On Railway, `railway.json` selects the same
+   Dockerfile and health check.)
+2. Set only `DATABASE_URL` (the Session pooler URL) and `COLLAB_TOKEN_SECRET` (must match the
+   app's). `PORT` is provided by the host. The server writes a row to `heartbeats` when it starts,
+   so a fresh `beat_at` confirms it can reach the database.
+3. Point the app's `NEXT_PUBLIC_COLLAB_WS_URL` at the service's `wss://` URL and redeploy the app
+   (it is read at build time).
+
+A free Render service sleeps after about 15 minutes without traffic and takes 30–60 s to wake.
+Editing keeps working meanwhile: changes stay on the device and sync when the server is up. Open
+`/health` before a demo, or have an uptime monitor call it every 10 minutes to keep it awake.
 
 ### Database → Supabase
 
-Use the **Session pooler** connection string for `DATABASE_URL` and `DIRECT_URL` on Vercel and
-Railway (see the connection note above — the direct host is IPv6-only). Migrations include the RLS policies and enable `pgvector`.
+Use the **Session pooler** connection string for `DATABASE_URL` and `DIRECT_URL` on Vercel and the
+collab server (see the connection note above — the direct host is IPv6-only). Migrations include
+the RLS policies and enable `pgvector`.
+
+Session mode gives each client its own Postgres connection, and the pool is small (15 by default
+on the free plan). Serverless functions each open their own Prisma pool, so on Vercel add
+`?connection_limit=3&pool_timeout=20` to `DATABASE_URL` (not `DIRECT_URL`, which only migrations
+use). Without it, a few concurrent requests exhaust the pool and pages fail with
+`EMAXCONNSESSION`. The live project also raises **Connection pool size** to 30 (Supabase →
+Database → Connection pooling); keep it well under the plan's 60 Postgres connections.
 
 ### Keeping a free Supabase project awake
 
